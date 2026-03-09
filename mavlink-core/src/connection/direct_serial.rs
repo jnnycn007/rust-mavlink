@@ -12,9 +12,9 @@ use std::sync::Mutex;
 
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
 
-#[cfg(not(feature = "signing"))]
+#[cfg(not(feature = "mav2-message-signing"))]
 use crate::{read_versioned_msg, read_versioned_raw_message, write_versioned_msg};
-#[cfg(feature = "signing")]
+#[cfg(feature = "mav2-message-signing")]
 use crate::{
     read_versioned_msg_signed, read_versioned_raw_message_signed, write_versioned_msg_signed,
     SigningConfig, SigningData,
@@ -32,7 +32,7 @@ pub struct SerialConnection {
     sequence: AtomicU8,
     protocol_version: MavlinkVersion,
     recv_any_version: bool,
-    #[cfg(feature = "signing")]
+    #[cfg(feature = "mav2-message-signing")]
     signing_data: Option<SigningData>,
 }
 
@@ -42,19 +42,17 @@ impl<M: Message> MavConnection<M> for SerialConnection {
         let version = ReadVersion::from_conn_cfg::<_, M>(self);
 
         loop {
-            #[cfg(not(feature = "signing"))]
+            #[cfg(not(feature = "mav2-message-signing"))]
             let result = read_versioned_msg(port.deref_mut(), version);
-            #[cfg(feature = "signing")]
+            #[cfg(feature = "mav2-message-signing")]
             let result =
                 read_versioned_msg_signed(port.deref_mut(), version, self.signing_data.as_ref());
             match result {
                 ok @ Ok(..) => {
                     return ok;
                 }
-                Err(MessageReadError::Io(e)) => {
-                    if e.kind() == io::ErrorKind::UnexpectedEof {
-                        return Err(MessageReadError::Io(e));
-                    }
+                Err(MessageReadError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    return Err(MessageReadError::Io(e));
                 }
                 _ => {}
             }
@@ -66,9 +64,9 @@ impl<M: Message> MavConnection<M> for SerialConnection {
         let version = ReadVersion::from_conn_cfg::<_, M>(self);
 
         loop {
-            #[cfg(not(feature = "signing"))]
+            #[cfg(not(feature = "mav2-message-signing"))]
             let result = read_versioned_raw_message::<M, _>(port.deref_mut(), version);
-            #[cfg(feature = "signing")]
+            #[cfg(feature = "mav2-message-signing")]
             let result = read_versioned_raw_message_signed::<M, _>(
                 port.deref_mut(),
                 version,
@@ -78,10 +76,8 @@ impl<M: Message> MavConnection<M> for SerialConnection {
                 ok @ Ok(..) => {
                     return ok;
                 }
-                Err(MessageReadError::Io(e)) => {
-                    if e.kind() == io::ErrorKind::UnexpectedEof {
-                        return Err(MessageReadError::Io(e));
-                    }
+                Err(MessageReadError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    return Err(MessageReadError::Io(e));
                 }
                 _ => {}
             }
@@ -92,10 +88,10 @@ impl<M: Message> MavConnection<M> for SerialConnection {
         let mut port = self.read_port.lock().unwrap();
         let version = ReadVersion::from_conn_cfg::<_, M>(self);
 
-        #[cfg(not(feature = "signing"))]
+        #[cfg(not(feature = "mav2-message-signing"))]
         let result = read_versioned_msg(port.deref_mut(), version);
 
-        #[cfg(feature = "signing")]
+        #[cfg(feature = "mav2-message-signing")]
         let result =
             read_versioned_msg_signed(port.deref_mut(), version, self.signing_data.as_ref());
 
@@ -127,9 +123,9 @@ impl<M: Message> MavConnection<M> for SerialConnection {
             component_id: header.component_id,
         };
 
-        #[cfg(not(feature = "signing"))]
+        #[cfg(not(feature = "mav2-message-signing"))]
         let result = write_versioned_msg(port.deref_mut(), self.protocol_version, header, data);
-        #[cfg(feature = "signing")]
+        #[cfg(feature = "mav2-message-signing")]
         let result = write_versioned_msg_signed(
             port.deref_mut(),
             self.protocol_version,
@@ -156,7 +152,7 @@ impl<M: Message> MavConnection<M> for SerialConnection {
         self.recv_any_version
     }
 
-    #[cfg(feature = "signing")]
+    #[cfg(feature = "mav2-message-signing")]
     fn setup_signing(&mut self, signing_data: Option<SigningConfig>) {
         self.signing_data = signing_data.map(SigningData::from_config);
     }
@@ -181,7 +177,7 @@ impl Connectable for SerialConfig {
             write_port: Mutex::new(write_port),
             sequence: AtomicU8::new(0),
             protocol_version: MavlinkVersion::V2,
-            #[cfg(feature = "signing")]
+            #[cfg(feature = "mav2-message-signing")]
             signing_data: None,
             recv_any_version: false,
         }
