@@ -1,35 +1,28 @@
-use async_trait::async_trait;
 use std::io;
 
-use crate::{
-    MAVLinkMessageRaw, MavFrame, MavHeader, MavlinkVersion, Message, connectable::ConnectionAddress,
-};
-#[cfg(feature = "transport-tcp")]
-mod tcp;
-
-#[cfg(feature = "transport-udp")]
-mod udp;
-
-#[cfg(feature = "transport-direct-serial")]
-mod direct_serial;
-
-mod file;
+use async_trait::async_trait;
 
 #[cfg(feature = "mav2-message-signing")]
 use crate::SigningConfig;
 
+use crate::error::MessageReadError;
+use crate::error::MessageWriteError;
+use crate::{
+    MAVLinkMessageRaw, MavFrame, MavHeader, MavlinkVersion, Message, connectable::ConnectionAddress,
+};
+
 /// An async MAVLink connection
-#[async_trait::async_trait]
+#[async_trait]
 pub trait AsyncMavConnection<M: Message + Sync + Send> {
     /// Receive a mavlink message.
     ///
     /// Yield until a valid frame is received, ignoring invalid messages.
-    async fn recv(&self) -> Result<(MavHeader, M), crate::error::MessageReadError>;
+    async fn recv(&self) -> Result<(MavHeader, M), MessageReadError>;
 
     /// Receive a raw, unparsed mavlink message.
     ///
     /// Yield until a valid frame is received, ignoring invalid messages.
-    async fn recv_raw(&self) -> Result<MAVLinkMessageRaw, crate::error::MessageReadError>;
+    async fn recv_raw(&self) -> Result<MAVLinkMessageRaw, MessageReadError>;
 
     /// Try to receive a MAVLink message.
     ///
@@ -39,14 +32,10 @@ pub trait AsyncMavConnection<M: Message + Sync + Send> {
     /// # Errors
     ///
     /// Returns any eror encounter while receiving or deserializing a message.
-    async fn try_recv(&self) -> Result<(MavHeader, M), crate::error::MessageReadError>;
+    async fn try_recv(&self) -> Result<(MavHeader, M), MessageReadError>;
 
     /// Send a mavlink message
-    async fn send(
-        &self,
-        header: &MavHeader,
-        data: &M,
-    ) -> Result<usize, crate::error::MessageWriteError>;
+    async fn send(&self, header: &MavHeader, data: &M) -> Result<usize, MessageWriteError>;
 
     /// Sets the MAVLink version to use for receiving (when `allow_recv_any_version()` is `false`) and sending messages.
     fn set_protocol_version(&mut self, version: MavlinkVersion);
@@ -62,15 +51,12 @@ pub trait AsyncMavConnection<M: Message + Sync + Send> {
     fn allow_recv_any_version(&self) -> bool;
 
     /// Write whole frame.
-    async fn send_frame(
-        &self,
-        frame: &MavFrame<M>,
-    ) -> Result<usize, crate::error::MessageWriteError> {
+    async fn send_frame(&self, frame: &MavFrame<M>) -> Result<usize, MessageWriteError> {
         self.send(&frame.header, &frame.msg).await
     }
 
     /// Read whole frame.
-    async fn recv_frame(&self) -> Result<MavFrame<M>, crate::error::MessageReadError> {
+    async fn recv_frame(&self) -> Result<MavFrame<M>, MessageReadError> {
         let (header, msg) = self.recv().await?;
         let protocol_version = self.protocol_version();
         Ok(MavFrame {
@@ -81,7 +67,7 @@ pub trait AsyncMavConnection<M: Message + Sync + Send> {
     }
 
     /// Send a message with default header.
-    async fn send_default(&self, data: &M) -> Result<usize, crate::error::MessageWriteError> {
+    async fn send_default(&self, data: &M) -> Result<usize, MessageWriteError> {
         let header = MavHeader::default();
         self.send(&header, data).await
     }
@@ -118,20 +104,6 @@ pub async fn connect_async<M: Message + Sync + Send>(
     ConnectionAddress::parse_address(address)?
         .connect_async::<M>()
         .await
-}
-
-/// Returns the socket address for the given address.
-#[cfg(any(feature = "transport-tcp", feature = "transport-udp"))]
-pub(crate) fn get_socket_addr<T: std::net::ToSocketAddrs>(
-    address: T,
-) -> Result<std::net::SocketAddr, io::Error> {
-    let addr = match address.to_socket_addrs()?.next() {
-        Some(addr) => addr,
-        None => {
-            return Err(io::Error::other("Host address lookup failed"));
-        }
-    };
-    Ok(addr)
 }
 
 /// A MAVLink connection address that can be connected to, establishing an [`AsyncMavConnection`]
