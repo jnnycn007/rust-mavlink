@@ -35,7 +35,7 @@ Add the crate:
 
 ```toml
 [dependencies]
-mavlink = "0.17.1"
+mavlink = "0.18.0"
 ```
 
 Simple code example:
