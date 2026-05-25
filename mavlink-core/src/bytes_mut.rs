@@ -39,9 +39,7 @@ impl<'a> BytesMut<'a> {
     pub fn put_slice(&mut self, src: &[u8]) {
         self.check_remaining(src.len());
 
-        unsafe {
-            core::ptr::copy_nonoverlapping(src.as_ptr(), &mut self.data[self.len], src.len());
-        }
+        self.data[self.len..(self.len + src.len())].copy_from_slice(src);
         self.len += src.len();
     }
 
@@ -76,7 +74,7 @@ impl<'a> BytesMut<'a> {
         self.check_remaining(SIZE);
 
         let src = val.to_le_bytes();
-        self.data[self.len..self.len + SIZE].copy_from_slice(&src[..]);
+        self.data[self.len..(self.len + SIZE)].copy_from_slice(&src[..]);
         self.len += SIZE;
     }
 
@@ -89,7 +87,7 @@ impl<'a> BytesMut<'a> {
         self.check_remaining(SIZE);
 
         let src = val.to_le_bytes();
-        self.data[self.len..self.len + SIZE].copy_from_slice(&src[..]);
+        self.data[self.len..(self.len + SIZE)].copy_from_slice(&src[..]);
         self.len += SIZE;
     }
 
@@ -109,7 +107,7 @@ impl<'a> BytesMut<'a> {
         );
 
         let src = val.to_le_bytes();
-        self.data[self.len..self.len + SIZE].copy_from_slice(&src[..3]);
+        self.data[self.len..(self.len + SIZE)].copy_from_slice(&src[..3]);
         self.len += SIZE;
     }
 
@@ -122,7 +120,7 @@ impl<'a> BytesMut<'a> {
         self.check_remaining(SIZE);
 
         let src = val.to_le_bytes();
-        self.data[self.len..self.len + SIZE].copy_from_slice(&src[..]);
+        self.data[self.len..(self.len + SIZE)].copy_from_slice(&src[..]);
         self.len += SIZE;
     }
 
@@ -135,7 +133,7 @@ impl<'a> BytesMut<'a> {
         self.check_remaining(SIZE);
 
         let src = val.to_le_bytes();
-        self.data[self.len..self.len + SIZE].copy_from_slice(&src[..]);
+        self.data[self.len..(self.len + SIZE)].copy_from_slice(&src[..]);
         self.len += SIZE;
     }
 
@@ -148,7 +146,7 @@ impl<'a> BytesMut<'a> {
         self.check_remaining(SIZE);
 
         let src = val.to_le_bytes();
-        self.data[self.len..self.len + SIZE].copy_from_slice(&src[..]);
+        self.data[self.len..(self.len + SIZE)].copy_from_slice(&src[..]);
         self.len += SIZE;
     }
 
@@ -161,7 +159,7 @@ impl<'a> BytesMut<'a> {
         self.check_remaining(SIZE);
 
         let src = val.to_le_bytes();
-        self.data[self.len..self.len + SIZE].copy_from_slice(&src[..]);
+        self.data[self.len..(self.len + SIZE)].copy_from_slice(&src[..]);
         self.len += SIZE;
     }
 
@@ -174,7 +172,7 @@ impl<'a> BytesMut<'a> {
         self.check_remaining(SIZE);
 
         let src = val.to_le_bytes();
-        self.data[self.len..self.len + SIZE].copy_from_slice(&src[..]);
+        self.data[self.len..(self.len + SIZE)].copy_from_slice(&src[..]);
         self.len += SIZE;
     }
 
@@ -187,7 +185,7 @@ impl<'a> BytesMut<'a> {
         self.check_remaining(SIZE);
 
         let src = val.to_le_bytes();
-        self.data[self.len..self.len + SIZE].copy_from_slice(&src[..]);
+        self.data[self.len..(self.len + SIZE)].copy_from_slice(&src[..]);
         self.len += SIZE;
     }
 }
