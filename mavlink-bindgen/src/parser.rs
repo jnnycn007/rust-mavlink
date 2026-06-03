@@ -83,18 +83,26 @@ impl MavProfile {
 
                         // it is a bitmask
                         if enm.bitmask {
-                            enm.primitive = Some(field.mavtype.rust_primitive_type());
-
-                            // check if all enum values can be stored in the fields
+                            // check if any enum values can be stored in the fields
+                            let mut any_fit = false;
+                            let mut all_fit = true;
                             for entry in &enm.entries {
-                                assert!(
-                                    entry.value.unwrap_or_default()
-                                        <= field.mavtype.max_int_value(),
-                                    "bitflag enum field {} of {} must be able to fit all possible values for {}",
-                                    field.name,
-                                    msg.name,
-                                    enum_name,
-                                );
+                                if field.mavtype.max_int_value() < entry.value.unwrap_or_default() {
+                                    field.is_undersized = true;
+                                    enm.additional_primitives.insert(field.mavtype.clone());
+                                    all_fit = false;
+                                } else {
+                                    any_fit = true;
+                                }
+                            }
+                            assert!(
+                                any_fit,
+                                "bitflag enum field {} of {} must be able to fit at least one possible value {}",
+                                field.name, msg.name, enum_name,
+                            );
+
+                            if all_fit {
+                                enm.primitive = Some(field.mavtype.clone());
                             }
 
                             // Fix fields in backwards manner
@@ -104,6 +112,22 @@ impl MavProfile {
                         }
                     }
                 }
+            }
+        }
+        for enm in self.enums.values_mut() {
+            if enm.bitmask && enm.primitive.is_none() {
+                let max = enm
+                    .entries
+                    .iter()
+                    .filter_map(|e| e.value)
+                    .max()
+                    .unwrap_or_default();
+                let primitive = match max {
+                    max if max <= u16::MAX as u64 => MavType::UInt16,
+                    max if max <= u32::MAX as u64 => MavType::UInt32,
+                    _ => MavType::UInt64,
+                };
+                enm.primitive = Some(primitive);
             }
         }
         self
@@ -520,9 +544,10 @@ pub struct MavEnum {
     /// If contains Some, the string represents the primitive type (size) for bitflags.
     /// If no fields use this enum, the bitmask is true, but primitive is None. In this case
     /// regular enum is generated as primitive is unknown.
-    pub primitive: Option<String>,
+    pub primitive: Option<MavType>,
     pub bitmask: bool,
     pub deprecated: Option<MavDeprecation>,
+    pub additional_primitives: HashSet<MavType>,
 }
 
 impl MavEnum {
@@ -542,16 +567,21 @@ impl MavEnum {
                     None => self.entries.push(enum_entry.clone()),
                 }
             }
+            self.additional_primitives
+                .extend(enm.additional_primitives.clone());
         }
     }
 
-    fn emit_defs(&self) -> Vec<TokenStream> {
+    fn emit_defs(&self, restricted_primitive: Option<&MavType>) -> Vec<TokenStream> {
+        let max_value = restricted_primitive
+            .as_ref()
+            .map(|t| t.max_int_value())
+            .unwrap_or(u64::MAX);
         let mut cnt = 0u64;
         self.entries
             .iter()
             .map(|enum_entry| {
                 let name = format_ident!("{}", enum_entry.name.clone());
-                let value;
 
                 let deprecation = enum_entry.emit_deprecation();
 
@@ -564,37 +594,47 @@ impl MavEnum {
 
                 let params_doc = enum_entry.emit_params();
 
-                if let Some(tmp_value) = enum_entry.value {
+                let value = if let Some(tmp_value) = enum_entry.value {
                     cnt = cnt.max(tmp_value);
-                    let tmp = TokenStream::from_str(&tmp_value.to_string()).unwrap();
-                    value = quote!(#tmp);
+                    tmp_value
                 } else {
                     cnt += 1;
-                    value = quote!(#cnt);
-                }
+                    cnt
+                };
 
-                if self.is_generated_as_bitflags() {
-                    quote! {
-                        #deprecation
-                        #description
-                        #params_doc
-                        const #name = #value;
+                if value <= max_value {
+                    let value = TokenStream::from_str(&value.to_string()).unwrap();
+                    if self.is_generated_as_bitflags() {
+                        quote! {
+                            #deprecation
+                            #description
+                            #params_doc
+                            const #name = #value;
+                        }
+                    } else {
+                        quote! {
+                            #deprecation
+                            #description
+                            #params_doc
+                            #name = #value,
+                        }
                     }
                 } else {
-                    quote! {
-                        #deprecation
-                        #description
-                        #params_doc
-                        #name = #value,
-                    }
+                    quote!()
                 }
             })
             .collect()
     }
 
     #[inline(always)]
-    fn emit_name(&self) -> TokenStream {
-        let name = format_ident!("{}", self.name);
+    fn emit_name(&self, additional_primitive: Option<&MavType>) -> TokenStream {
+        let name = format_ident!(
+            "{}{}",
+            self.name,
+            &additional_primitive
+                .map(|s| s.rust_primitive_type().to_uppercase())
+                .unwrap_or_default()
+        );
         quote!(#name)
     }
 
@@ -613,18 +653,36 @@ impl MavEnum {
     }
 
     fn emit_rust(&self) -> TokenStream {
-        let defs = self.emit_defs();
-        let enum_name = self.emit_name();
+        let base = self.emit_enum_def(None);
+        let adds = self.emit_additional_primitives();
+        quote! {
+            #base
+            #adds
+        }
+    }
+
+    fn emit_enum_def(&self, restricted_primitive: Option<MavType>) -> TokenStream {
+        let defs = self.emit_defs(restricted_primitive.as_ref());
+        let enum_name = self.emit_name(restricted_primitive.as_ref());
         let const_default = self.emit_const_default();
 
         let deprecated = self.emit_deprecation();
 
-        let description = if let Some(description) = self.description.as_ref() {
+        let mut description = if let Some(description) = self.description.as_ref() {
             let desc = URL_REGEX.replace_all(description, "<$1>");
             quote!(#[doc = #desc])
         } else {
             quote!()
         };
+
+        if let Some(restricted_primitive) = &restricted_primitive {
+            let doc = format!(
+                "This is the `{0}` version of `{1}`. It does not allow flags that exceed `{0}::MAX`",
+                restricted_primitive.rust_primitive_type(),
+                self.emit_name(None),
+            );
+            description.extend(quote! {#[doc = #doc]});
+        }
 
         let mav_bool_impl = if self.name == "MavBool"
             && self
@@ -649,10 +707,15 @@ impl MavEnum {
             quote!()
         };
 
-        let enum_def;
-        if let Some(primitive) = self.primitive.clone() {
-            let primitive = format_ident!("{}", primitive);
-            enum_def = quote! {
+        let enum_def = if let Some(primitive) = self.primitive.clone() {
+            let primitive = format_ident!(
+                "{}",
+                &restricted_primitive
+                    .as_ref()
+                    .unwrap_or(&primitive)
+                    .rust_primitive_type()
+            );
+            quote! {
                 bitflags!{
                     #[cfg_attr(feature = "ts-rs", derive(TS))]
                     #[cfg_attr(feature = "ts-rs", ts(export, type = "number"))]
@@ -665,9 +728,9 @@ impl MavEnum {
                         #(#defs)*
                     }
                 }
-            };
+            }
         } else {
-            enum_def = quote! {
+            quote! {
                 #[cfg_attr(feature = "ts-rs", derive(TS))]
                 #[cfg_attr(feature = "ts-rs", ts(export))]
                 #[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
@@ -680,8 +743,8 @@ impl MavEnum {
                 pub enum #enum_name {
                     #(#defs)*
                 }
-            };
-        }
+            }
+        };
 
         quote! {
             #enum_def
@@ -697,6 +760,14 @@ impl MavEnum {
                 }
             }
         }
+    }
+
+    fn emit_additional_primitives(&self) -> TokenStream {
+        let mut ts = TokenStream::new();
+        for primitive in &self.additional_primitives {
+            ts.extend(self.emit_enum_def(Some(primitive.clone())));
+        }
+        ts
     }
 }
 
@@ -1108,6 +1179,7 @@ pub struct MavField {
     pub enumtype: Option<String>,
     pub display: Option<String>,
     pub is_extension: bool,
+    pub is_undersized: bool,
 }
 
 impl MavField {
@@ -1126,8 +1198,18 @@ impl MavField {
             let rt = TokenStream::from_str(&self.mavtype.rust_type()).unwrap();
             mavtype = quote!(#rt);
         } else if let Some(enumname) = &self.enumtype {
-            let en = TokenStream::from_str(enumname).unwrap();
-            mavtype = quote!(#en);
+            if self.is_undersized {
+                let en = TokenStream::from_str(&format!(
+                    "{}{}",
+                    enumname,
+                    self.mavtype.rust_primitive_type().to_uppercase()
+                ))
+                .unwrap();
+                mavtype = quote!(#en);
+            } else {
+                let en = TokenStream::from_str(enumname).unwrap();
+                mavtype = quote!(#en);
+            }
         } else {
             let rt = TokenStream::from_str(&self.mavtype.rust_type()).unwrap();
             mavtype = quote!(#rt);
@@ -1142,6 +1224,9 @@ impl MavField {
         if let Some(val) = self.description.as_ref() {
             let desc = URL_REGEX.replace_all(val, "<$1>");
             ts.extend(quote!(#[doc = #desc]));
+        }
+        if self.is_undersized {
+            ts.extend(quote!(#[doc = "This field can not store all possible values of its associated bitflag enum."]));
         }
         ts
     }
@@ -1199,7 +1284,7 @@ impl MavField {
                 if dsp == "bitmask" {
                     // bitflags
                     let tmp = self.mavtype.rust_reader(&quote!(let tmp), buf);
-                    let enum_name_ident = format_ident!("{}", enum_name);
+                    let enum_name_ident = self.emit_type();
                     quote! {
                         #tmp
                         // Keep unknown bits for forward compatibility.
@@ -1230,8 +1315,8 @@ impl MavField {
         if matches!(self.mavtype, MavType::Array(_, _)) {
             let default_value = self.mavtype.emit_default_value(dialect_has_version);
             quote!(#field: #default_value,)
-        } else if let Some(enumname) = &self.enumtype {
-            let ty = TokenStream::from_str(enumname).unwrap();
+        } else if self.enumtype.is_some() {
+            let ty = self.emit_type();
             quote!(#field: #ty::DEFAULT,)
         } else {
             let default_value = self.mavtype.emit_default_value(dialect_has_version);
@@ -1240,7 +1325,7 @@ impl MavField {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Clone, Default, Hash, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum MavType {
     UInt8MavlinkVersion,
@@ -2302,6 +2387,7 @@ mod tests {
                     enumtype: None,
                     display: None,
                     is_extension: false,
+                    is_undersized: false,
                 },
                 MavField {
                     mavtype: MavType::UInt8,
@@ -2310,6 +2396,7 @@ mod tests {
                     enumtype: None,
                     display: None,
                     is_extension: false,
+                    is_undersized: false,
                 },
             ],
             deprecated: None,
@@ -2326,6 +2413,7 @@ mod tests {
                 enumtype: None,
                 display: None,
                 is_extension: false,
+                is_undersized: false,
             }],
             deprecated: None,
         };
@@ -2364,6 +2452,7 @@ mod tests {
                     enumtype: None,
                     display: None,
                     is_extension: false,
+                    is_undersized: false,
                 },
                 MavField {
                     mavtype: MavType::UInt16,
@@ -2372,6 +2461,7 @@ mod tests {
                     enumtype: None,
                     display: None,
                     is_extension: false,
+                    is_undersized: false,
                 },
             ],
             deprecated: None,
@@ -2395,6 +2485,7 @@ mod tests {
                     enumtype: None,
                     display: None,
                     is_extension: false,
+                    is_undersized: false,
                 },
                 MavField {
                     mavtype: MavType::UInt8,
@@ -2403,6 +2494,7 @@ mod tests {
                     enumtype: None,
                     display: None,
                     is_extension: false,
+                    is_undersized: false,
                 },
             ],
             deprecated: None,
@@ -2425,6 +2517,7 @@ mod tests {
                     enumtype: None,
                     display: None,
                     is_extension: false,
+                    is_undersized: false,
                 },
                 MavField {
                     mavtype: MavType::UInt8,
@@ -2433,6 +2526,7 @@ mod tests {
                     enumtype: None,
                     display: None,
                     is_extension: false,
+                    is_undersized: false,
                 },
             ],
             deprecated: None,
@@ -2453,6 +2547,7 @@ mod tests {
                 enumtype: None,
                 display: None,
                 is_extension: false,
+                is_undersized: false,
             };
             fields.push(field);
         }
